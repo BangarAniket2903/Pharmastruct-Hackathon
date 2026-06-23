@@ -3,7 +3,26 @@
 import { generateText, Output } from 'ai'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import { z } from 'zod'
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb'
 
+// ============================================================================
+// 1. AWS DYNAMODB INITIALIZATION
+// ============================================================================
+// Uses standard connection credentials automatically injected by Vercel
+const dynamoClient = new DynamoDBClient({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
+  },
+})
+
+const docClient = DynamoDBDocumentClient.from(dynamoClient)
+
+// ============================================================================
+// 2. GEMINI AI CONFIGURATION & SCHEMAS
+// ============================================================================
 const google = createGoogleGenerativeAI({
   apiKey: process.env.GEMINI_API_KEY,
 })
@@ -41,7 +60,6 @@ export type ExtractResult =
   | { ok: false; error: string }
 
 // Realistic fallback data shown when the live AI call fails (e.g. 429 quota).
-// Keeps the demo functional without a working Gemini quota.
 const MOCK_RECORDS: ClinicalRecord[] = [
   {
     patientAge: '54',
@@ -80,6 +98,13 @@ const MOCK_RECORDS: ClinicalRecord[] = [
   },
 ]
 
+// ============================================================================
+// 3. SERVER ACTIONS (BUSINESS LOGIC)
+// ============================================================================
+
+/**
+ * Extracts raw text clinical notes into highly structured entity rows using Gemini 2.0
+ */
 export async function extractClinicalData(note: string): Promise<ExtractResult> {
   const trimmed = note.trim()
 
@@ -115,7 +140,34 @@ export async function extractClinicalData(note: string): Promise<ExtractResult> 
           ? 'Gemini authentication failed — showing sample data so the demo stays functional.'
           : 'Live extraction unavailable — showing sample data so the demo stays functional.'
 
-    // Always keep the demo usable: return realistic mock records on any failure.
     return { ok: true, records: MOCK_RECORDS, source: 'mock', notice }
+  }
+}
+
+/**
+ * Persists the extracted clinical records array straight to the Amazon DynamoDB cloud table
+ */
+export async function saveRecordsToDatabase(records: ClinicalRecord[]): Promise<{ success: boolean; error?: string }> {
+  try {
+    const tableName = 'PharmaStructRecords'
+
+    // Process and upload each row sequentially into AWS DynamoDB
+    for (const record of records) {
+      await docClient.send(
+        new PutCommand({
+          TableName: tableName,
+          Item: {
+            recordId: Math.random().toString(36).substring(2, 11), // Fast generation of a clean alphanumeric partition key string
+            createdAt: new Date().toISOString(),
+            ...record, // Maps patientAge, gender, medication, dosage, and symptoms beautifully as string values
+          },
+        })
+      )
+    }
+
+    return { success: true }
+  } catch (err: any) {
+    console.error('[AWS Database Error]: Failed to upload to DynamoDB:', err)
+    return { success: false, error: err.message || 'Failed to save data records to cloud storage.' }
   }
 }
