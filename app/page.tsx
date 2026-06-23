@@ -4,7 +4,7 @@ import { useState, useTransition } from 'react'
 import { DashboardHeader } from '@/components/dashboard-header'
 import { NoteInput } from '@/components/note-input'
 import { ResultsTable } from '@/components/results-table'
-import { extractClinicalData, type ClinicalRecord } from '@/app/actions/extract'
+import { extractClinicalData, saveRecordsToDatabase, type ClinicalRecord } from '@/app/actions/extract'
 
 export default function Page() {
   const [note, setNote] = useState('')
@@ -13,10 +13,10 @@ export default function Page() {
   const [notice, setNotice] = useState<string | null>(null)
   const [hasProcessed, setHasProcessed] = useState(false)
   const [isPending, startTransition] = useTransition()
+  const [isSaving, setIsSaving] = useState(false)
 
   function handleProcess() {
     // Re-entrancy guard: never fire while a request is in flight or the note is empty.
-    // The AI extraction must ONLY run from this explicit user-triggered handler.
     if (isPending || note.trim().length === 0) return
 
     setError(null)
@@ -35,9 +35,23 @@ export default function Page() {
     })
   }
 
-  function handleSaveToDatabase() {
-    // Placeholder for the upcoming database step.
-    console.log('[v0] Save to Database clicked — records ready to persist:', records)
+  async function handleSaveToDatabase() {
+    if (records.length === 0 || isSaving) return
+
+    setIsSaving(true)
+    setNotice('Connecting to AWS DynamoDB...') // Temporary loading message
+    
+    const result = await saveRecordsToDatabase(records)
+    
+    if (result.success) {
+      // Replaces the notice banner with a highly visible success message
+      setNotice('✅ Success: Patient records securely saved to Amazon DynamoDB!')
+    } else {
+      setNotice(null)
+      setError(`❌ Database Error: ${result.error}`)
+    }
+    
+    setIsSaving(false)
   }
 
   return (
